@@ -396,3 +396,450 @@ Concurrent device conflict	                                        ✅ Passed
 Out-of-sequence processing	                                        ✅ Passed
 Idempotency (duplicate prevention)	                                ✅ Passed
 
+
+
+Task 2: Multi-Tenant Inventory API
+
+Overview
+A production-grade multi-tenant inventory management system for restaurant chains. Each tenant (location) manages its own stock independently, while parent accounts can query aggregate views across all locations. Built with NestJS, PostgreSQL, Prisma, and TypeScript.
+
+Architecture Decision: Data-Layer Tenant Isolation
+Critical Requirement: Tenant isolation is enforced at the data layer, not just the application layer.
+
+Implementation
+Every table includes a tenantId column, and all queries automatically filter by tenant ID:
+
+sql
+-- Every query includes tenant isolation
+SELECT * FROM inventory_items WHERE tenant_id = 'current_tenant_id'
+Row-Level Security (RLS) Ready
+The schema is designed for PostgreSQL RLS, which can be enabled in production:
+
+sql
+ALTER TABLE task2_inventory_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON task2_inventory_items
+  USING (tenant_id = current_setting('app.current_tenant_id'));
+
+API Endpoints
+Base URL: http://localhost:3000/inventory
+
+Required Headers:
+
+Header	                              Required	                                           Description
+x-tenant-id	                          ✅ Yes	                                 Tenant ID for all operations (except aggregate)
+x-parent-tenant-id	                  ✅ Yes	                                 Parent tenant ID for aggregate queries
+
+Endpoint Reference
+1. Create Inventory Item
+POST /inventory/items
+
+Request Body:
+
+{
+  "locationId": "uuid",
+  "sku": "COKE-12OZ",
+  "name": "Coca Cola 12oz",
+  "description": "Carbonated soft drink",
+  "unitPrice": 150,
+  "minThreshold": 10
+}
+
+Field	                                               Type	                                 Required	                                    Description
+locationId	                                           UUID	                                   Yes	                                        Location ID where item is stored
+sku	                                                   string	                               Yes	                                        Stock Keeping Unit (unique per location)
+name	                                               string	                               Yes	                                        Display name
+description	                                           string	                               No	                                        Optional description
+unitPrice	                                           integer	                               No	                                        Price in cents ($1.50 = 150)
+minThreshold	                                       integer	                               No	                                        Low-stock alert threshold (default: 5)
+
+Response: 201 Created
+
+{
+  "id": "uuid",
+  "tenantId": "uuid",
+  "locationId": "uuid",
+  "sku": "COKE-12OZ",
+  "name": "Coca Cola 12oz",
+  "unitPrice": 150,
+  "minThreshold": 10,
+  "createdAt": "2026-01-01T00:00:00.000Z"
+}
+
+2. List Inventory Items
+GET /inventory/items
+
+Query Parameters:
+
+Parameter	                                         Required	                         Description
+locationId	                                          No	                             Filter by specific location
+
+Response: 200 OK
+
+[
+  {
+    "id": "uuid",
+    "sku": "COKE-12OZ",
+    "name": "Coca Cola 12oz",
+    "currentStock": 100,
+    "isLowStock": false,
+    "minThreshold": 10,
+    "location": {
+      "id": "uuid",
+      "name": "Downtown Restaurant"
+    },
+    "movements": [...]
+  }
+]
+
+3. Get Single Inventory Item
+GET /inventory/items/{id}
+
+Response: 200 OK with full item details including movement history
+
+4. Update Inventory Item
+PUT /inventory/items/{id}
+
+Request Body:
+
+{
+  "name": "New Name",
+  "unitPrice": 175,
+  "minThreshold": 15
+}
+
+Response: 200 OK with updated item
+
+5. Delete Inventory Item
+DELETE /inventory/items/{id}
+
+Response: 204 No Content
+
+6. Record Stock Movement
+POST /inventory/movements
+
+Movement Types:
+
+SALE - Customer purchase (reduces stock)
+
+RESTOCK - Supplier delivery (increases stock)
+
+WASTE - Expired/damaged (reduces stock)
+
+TRANSFER_IN - Receive from another location (increases)
+
+TRANSFER_OUT - Send to another location (reduces)
+
+Request Body:
+
+{
+  "locationId": "uuid",
+  "itemId": "uuid",
+  "type": "SALE",
+  "quantity": 5,
+  "referenceId": "ORDER-12345",
+  "notes": "Customer walk-in sale"
+}
+
+Field	                                           Type	                          Required	                                      Description
+locationId	                                       UUID	                           Yes	                                          Location where movement occurred
+itemId	                                           UUID	                           Yes	                                          Item being moved
+type	                                           enum	                           Yes	                                          SALE, RESTOCK, WASTE, TRANSFER_IN, TRANSFER_OUT
+quantity	                                       integer	                       Yes	                                          Positive integer (sign handled automatically)
+referenceId	                                       string	                       No	                                          Order ID, PO number, transfer ID
+notes	                                           string	                       No	                                          Additional context
+
+Response: 201 Created
+
+{
+  "id": "uuid",
+  "type": "SALE",
+  "quantity": -5,
+  "createdAt": "2026-01-01T00:00:00.000Z"
+}
+
+Important: Quantity sign is handled automatically:
+
+SALE, WASTE, TRANSFER_OUT → stored as negative
+
+RESTOCK, TRANSFER_IN → stored as positive
+
+7. Get Current Stock
+GET /inventory/stock/{itemId}
+
+Response: 200 OK
+
+{
+  "itemId": "uuid",
+  "currentStock": 95
+}
+8. Get Stock by Location
+GET /inventory/locations/{locationId}/stock
+
+Response: 200 OK
+
+[
+  {
+    "id": "uuid",
+    "sku": "COKE-12OZ",
+    "name": "Coca Cola 12oz",
+    "currentStock": 95,
+    "minThreshold": 10,
+    "isLowStock": false
+  }
+]
+
+9. Aggregate Across Locations (Parent Account)
+GET /inventory/aggregate
+
+Query Parameters:
+
+Parameter	                                                    Required	                                  Description
+parentTenantId	                                                Yes	                                          Parent tenant ID for aggregation
+skus[]	                                                        No	                                          Filter by specific SKUs (can repeat)
+
+Response: 200 OK
+
+[
+  {
+    "sku": "COKE-12OZ",
+    "name": "Coca Cola 12oz",
+    "totalStock": 145,
+    "locations": {
+      "downtown-location-id": 95,
+      "uptown-location-id": 50
+    }
+  }
+]
+
+Database Schema
+Tables
+
+Table	                                                             Purpose
+task2_tenants	                                            Parent/child tenant hierarchy
+task2_locations	                                            Physical restaurant locations
+task2_inventory_items	                                    Product catalog with stock thresholds
+task2_stock_movements	                                    Immutable movement ledger
+
+Entity Relationships
+
+Tenant (1) ──< (N) Location
+Location (1) ──< (N) InventoryItem
+InventoryItem (1) ──< (N) StockMovement
+
+Key Constraints
+SKU is unique per (tenantId, locationId)
+
+tenantId on every table for isolation
+
+Foreign key cascades maintain referential integrity
+
+Database Indexes
+Index 1: Tenant + SKU Lookup
+
+sql
+CREATE INDEX idx_inventory_tenant_sku ON task2_inventory_items(tenant_id, sku);
+Why: Most queries filter by tenant_id first, then by sku for product lookups. This composite index provides optimal performance.
+
+Index 2: Location + Time Range
+
+sql
+CREATE INDEX idx_movements_location_time ON task2_stock_movements(location_id, created_at);
+Why: Parent accounts frequently query movement history by location and date range for reporting.
+
+Index 3: Low-Stock Alert Queries
+
+sql
+CREATE INDEX idx_items_low_stock ON task2_inventory_items(tenant_id, min_threshold);
+Why: Background workers query items where currentStock <= minThreshold. This index accelerates low-stock detection.
+
+Structured Logging
+Every request produces structured logs for observability:
+
+{
+  "requestId": "1735567890123-abc123",
+  "tenantId": "15efc240-5974-4fc7-9a7d-91bd81864186",
+  "method": "POST",
+  "url": "/inventory/movements",
+  "statusCode": 201,
+  "latencyMs": 45,
+  "outcome": "SUCCESS"
+}
+
+Logging Features:
+
+Unique request ID for tracing
+
+Tenant ID for multi-tenant debugging
+
+Latency measurement for performance monitoring
+
+Outcome classification (SUCCESS/FAILURE)
+
+Low-Stock Alerts Extension Plan
+To extend this service for low-stock alerts across tenants:
+
+1. Alert Table Schema
+
+sql
+CREATE TABLE low_stock_alerts (
+  id UUID PRIMARY KEY,
+  tenant_id UUID NOT NULL,
+  location_id UUID NOT NULL,
+  item_id UUID NOT NULL,
+  current_stock INT NOT NULL,
+  threshold INT NOT NULL,
+  triggered_at TIMESTAMP NOT NULL,
+  resolved_at TIMESTAMP,
+  notified BOOLEAN DEFAULT FALSE
+);
+
+2. Background Worker (Cron Job)
+typescript
+@Injectable()
+export class LowStockWorker {
+  @Cron('*/5 * * * *') // Every 5 minutes
+  async checkLowStock() {
+    const items = await this.prisma.inventoryItem2.findMany({
+      where: {
+        currentStock: { lte: this.prisma.inventoryItem2.fields.minThreshold }
+      }
+    });
+    
+    for (const item of items) {
+      await this.createAlert(item);
+      await this.sendNotification(item);
+    }
+  }
+}
+
+3. Notification Channels
+Channel	                                          Method	                       Use Case
+Webhook	                                         HTTP POST	                     Integration with POS systems
+Email	                                         SMTP	                         Manager notifications
+Slack	                                         Webhook	                     Team alerts
+
+4. Parent Dashboard Endpoints
+typescript
+GET /inventory/alerts/low-stock?tenantId={id}
+GET /inventory/alerts/resolved?from={date}
+POST /inventory/alerts/acknowledge/{id}
+
+5. Implementation Priority
+Add last_alert_sent_at to InventoryItem table
+
+Create background worker with @nestjs/schedule
+
+Implement webhook delivery with retry logic
+
+Add parent dashboard endpoints
+
+Configure notification preferences per tenant
+
+Testing Summary:
+
+Unit Tests:
+npm test -- inventory.service.spec.ts
+npm test -- aggregate.service.spec.ts
+
+E2E Tests:
+npm test -- inventory.e2e-spec.ts
+
+
+Test Coverage
+Category	                          Tests	                           Status
+CRUD Operations	                       8	                            ✅
+Stock Movements	                       6	                            ✅
+Aggregation	                           2	                            ✅ 
+Tenant Isolation	                   2	                            ✅
+Validation	                           2	                            ✅
+
+Running Task 2
+Prerequisites
+Task 1 setup complete (PostgreSQL running, migrations applied)
+
+Seed data created
+
+Setup
+bash
+# Run migrations (already done in Task 1)
+npm run prisma:migrate
+
+# Generate Prisma client
+npm run prisma:generate
+
+# Seed test data
+npm run prisma:seed
+
+# Start the server
+npm run start:dev
+Verify Installation
+bash
+# Health check
+curl http://localhost:3000/health
+
+# List all items (using your tenant ID)
+curl -X GET "http://localhost:3000/inventory/items" \
+  -H "x-tenant-id: YOUR_TENANT_ID"
+
+# Swagger documentation
+open http://localhost:3000/api
+
+## API Endpoints (No root /inventory endpoint)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/inventory/items` | GET | List inventory items |
+| `/inventory/items` | POST | Create new item |
+| `/inventory/items/:id` | GET | Get single item |
+| `/inventory/items/:id` | PUT | Update item |
+| `/inventory/items/:id` | DELETE | Delete item |
+| `/inventory/movements` | POST | Record stock movement |
+| `/inventory/stock/:itemId` | GET | Get current stock |
+| `/inventory/locations/:locationId/stock` | GET | Get stock by location |
+| `/inventory/aggregate` | GET | Aggregate across locations |
+
+
+Tradeoffs & Decisions:
+
+Chosen: Explicit tenantId on Every Table:
+Aspect	                        Decision
+Pro	                            Clear isolation, simple queries, RLS-ready
+Con	                            Slightly larger storage, every query needs filter
+Rationale	                    Security > storage optimization
+
+Chosen: Event-Based Stock Calculation:
+Aspect	                        Decision
+Pro	                            Complete audit trail, no data loss, easy debugging
+Con	                            Requires SUM() aggregation for current stock
+Mitigation	                    Can add materialized views for read-heavy workloads
+
+Chosen: REST over GraphQL:
+Aspect	                        Decision
+Pro	                            Simpler, better caching, familiar to most developers
+Con	                            Over-fetching possible for complex queries
+Rationale	                    Assessment requirements preferred REST
+
+Future Improvements (Given More Time):
+Real-time WebSocket updates - Push stock changes to connected POS devices
+
+Materialized stock views - Cache current stock for faster reads
+
+Batch movement API - Record multiple movements in one request
+
+Webhook delivery with retry - Reliable low-stock notifications
+
+Export reports (CSV/PDF) - Daily inventory reports for managers
+
+Transfer approval workflow - Multi-step location-to-location transfers
+
+Redis caching - Cache frequently accessed inventory items
+
+Troubleshooting:
+
+Issue	Solution
+Error: Location not found	Verify locationId belongs to the tenant in x-tenant-id
+Error: Item not found	Check item exists and belongs to tenant
+GET /inventory/aggregate returns empty	Ensure x-parent-tenant-id header is set
+Stock calculation incorrect	Check movement types and quantities in database
+Tenant isolation failing	Verify tenantId is set on all queries
+

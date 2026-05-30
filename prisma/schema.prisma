@@ -24,7 +24,7 @@ model InventoryItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  movements InventoryMovement[]
+  movements      InventoryMovement[]
   syncOperations SyncOperation[]
 
   @@index([tenantId])
@@ -38,7 +38,7 @@ model InventoryMovement {
   tenantId       String
   itemId         String
   type           InventoryMovementType
-  quantity       Int                  // Positive for restock, negative for sale/waste
+  quantity       Int
   sourceDeviceId String
   sequenceNumber Int
   createdAt      DateTime
@@ -61,17 +61,17 @@ model ProcessedOperation {
 }
 
 model SyncOperation {
-  id         String   @id @default(uuid())
+  id          String   @id @default(uuid())
   operationId String   @unique
-  tenantId   String
-  deviceId   String
-  itemId     String
-  type       String
-  quantity   Int
-  sequence   Int
-  status     String   // 'ACCEPTED', 'REJECTED', 'DUPLICATE'
-  reason     String?  // For rejected operations
-  syncedAt   DateTime @default(now())
+  tenantId    String
+  deviceId    String
+  itemId      String
+  type        String
+  quantity    Int
+  sequence    Int
+  status      String
+  reason      String?
+  syncedAt    DateTime @default(now())
 
   item InventoryItem? @relation(fields: [itemId], references: [id])
 
@@ -89,7 +89,7 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  locations Location[]
+  locations      Location[]
   inventoryItems InventoryItem2[]
 
   @@map("task2_tenants")
@@ -103,32 +103,12 @@ model Location {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   inventoryItems InventoryItem2[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
   @@map("task2_locations")
-}
-
-model InventoryItem2 {
-  id          String   @id @default(uuid())
-  tenantId    String
-  locationId  String
-  sku         String
-  name        String
-  minThreshold Int     @default(5)  // For low-stock alerts
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
-  movements StockMovement[]
-
-  @@unique([tenantId, locationId, sku])
-  @@index([tenantId, sku])
-  @@index([locationId])
-  @@map("task2_inventory_items")
 }
 
 enum StockMovementType {
@@ -139,14 +119,38 @@ enum StockMovementType {
   TRANSFER_OUT
 }
 
+model InventoryItem2 {
+  id           String   @id @default(uuid())
+  tenantId     String
+  locationId   String
+  sku          String
+  name         String
+  description  String?
+  unitPrice    Int?
+  minThreshold Int      @default(5)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location Location        @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+
+  @@unique([tenantId, locationId, sku])
+  @@index([tenantId, sku])
+  @@index([locationId])
+  @@index([tenantId, minThreshold])
+  @@map("task2_inventory_items")
+}
+
 model StockMovement {
   id          String   @id @default(uuid())
   tenantId    String
   locationId  String
   itemId      String
   type        StockMovementType
-  quantity    Int      // Positive for additions, negative for removals
-  referenceId String?  // Order ID, Transfer ID, etc.
+  quantity    Int
+  referenceId String?
+  notes       String?
   createdAt   DateTime @default(now())
 
   item InventoryItem2 @relation(fields: [itemId], references: [id], onDelete: Cascade)
@@ -154,6 +158,7 @@ model StockMovement {
   @@index([tenantId, locationId, createdAt])
   @@index([itemId])
   @@index([type])
+  @@index([createdAt])
   @@map("task2_stock_movements")
 }
 
@@ -180,20 +185,20 @@ enum PaymentEventType {
 }
 
 model PaymentRequest {
-  id              String        @id @default(uuid())
-  idempotencyKey  String        @unique
-  orderId         String
-  tenantId        String
-  amount          Int           // In smallest currency unit (e.g., cents)
-  currency        String        @default("NGN")
-  status          PaymentStatus @default(INITIATED)
-  providerId      String?       // Paystack transaction reference
-  errorMessage    String?
-  retryCount      Int           @default(0)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  confirmedAt     DateTime?
-  refundedAt      DateTime?
+  id             String        @id @default(uuid())
+  idempotencyKey String        @unique
+  orderId        String
+  tenantId       String
+  amount         Int
+  currency       String        @default("NGN")
+  status         PaymentStatus @default(INITIATED)
+  providerId     String?
+  errorMessage   String?
+  retryCount     Int           @default(0)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  confirmedAt    DateTime?
+  refundedAt     DateTime?
 
   events PaymentEvent[]
 
@@ -209,7 +214,7 @@ model PaymentEvent {
   paymentId   String
   eventType   PaymentEventType
   status      PaymentStatus
-  metadata    Json?           // Store provider response, error details, etc.
+  metadata    Json?
   createdAt   DateTime        @default(now())
 
   payment PaymentRequest @relation(fields: [paymentId], references: [id], onDelete: Cascade)
@@ -220,12 +225,12 @@ model PaymentEvent {
 }
 
 model ReconciliationLog {
-  id          String   @id @default(uuid())
-  runAt       DateTime @default(now())
-  discrepancies Json   // Store found discrepancies
-  resolvedCount Int     @default(0)
-  status      String   // 'COMPLETED', 'FAILED'
-  errorMessage String?
+  id             String   @id @default(uuid())
+  runAt          DateTime @default(now())
+  discrepancies  Json
+  resolvedCount  Int      @default(0)
+  status         String
+  errorMessage   String?
 
   @@index([runAt])
   @@map("task3_reconciliation_logs")
