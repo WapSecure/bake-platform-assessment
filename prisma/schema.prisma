@@ -7,8 +7,226 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Task 1: Sync Engine tables
-// Task 2: Inventory tables  
-// Task 3: Payment tables
-// To be added in next commit
+// ==================== TASK 1: OFFLINE SYNC ENGINE ====================
 
+enum InventoryMovementType {
+  SALE
+  RESTOCK
+  ADJUSTMENT
+  WASTE
+}
+
+model InventoryItem {
+  id        String   @id @default(uuid())
+  tenantId  String
+  sku       String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movements InventoryMovement[]
+  syncOperations SyncOperation[]
+
+  @@index([tenantId])
+  @@index([sku])
+  @@map("task1_inventory_items")
+}
+
+model InventoryMovement {
+  id             String               @id @default(uuid())
+  operationId    String               @unique
+  tenantId       String
+  itemId         String
+  type           InventoryMovementType
+  quantity       Int                  // Positive for restock, negative for sale/waste
+  sourceDeviceId String
+  sequenceNumber Int
+  createdAt      DateTime
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, itemId])
+  @@index([operationId])
+  @@map("task1_inventory_movements")
+}
+
+model ProcessedOperation {
+  operationId String   @id
+  processedAt DateTime @default(now())
+  deviceId    String
+  tenantId    String
+
+  @@index([tenantId])
+  @@map("task1_processed_operations")
+}
+
+model SyncOperation {
+  id         String   @id @default(uuid())
+  operationId String   @unique
+  tenantId   String
+  deviceId   String
+  itemId     String
+  type       String
+  quantity   Int
+  sequence   Int
+  status     String   // 'ACCEPTED', 'REJECTED', 'DUPLICATE'
+  reason     String?  // For rejected operations
+  syncedAt   DateTime @default(now())
+
+  item InventoryItem? @relation(fields: [itemId], references: [id])
+
+  @@index([tenantId, deviceId])
+  @@index([syncedAt])
+  @@map("task1_sync_operations")
+}
+
+// ==================== TASK 2: MULTI-TENANT INVENTORY API ====================
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  locations Location[]
+  inventoryItems InventoryItem2[]
+
+  @@map("task2_tenants")
+}
+
+model Location {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  inventoryItems InventoryItem2[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("task2_locations")
+}
+
+model InventoryItem2 {
+  id          String   @id @default(uuid())
+  tenantId    String
+  locationId  String
+  sku         String
+  name        String
+  minThreshold Int     @default(5)  // For low-stock alerts
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+
+  @@unique([tenantId, locationId, sku])
+  @@index([tenantId, sku])
+  @@index([locationId])
+  @@map("task2_inventory_items")
+}
+
+enum StockMovementType {
+  SALE
+  RESTOCK
+  WASTE
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+model StockMovement {
+  id          String   @id @default(uuid())
+  tenantId    String
+  locationId  String
+  itemId      String
+  type        StockMovementType
+  quantity    Int      // Positive for additions, negative for removals
+  referenceId String?  // Order ID, Transfer ID, etc.
+  createdAt   DateTime @default(now())
+
+  item InventoryItem2 @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, locationId, createdAt])
+  @@index([itemId])
+  @@index([type])
+  @@map("task2_stock_movements")
+}
+
+// ==================== TASK 3: PAYMENT RELIABILITY LAYER ====================
+
+enum PaymentStatus {
+  INITIATED
+  PROCESSING
+  CONFIRMED
+  FAILED_TIMEOUT
+  FAILED_PROVIDER_ERROR
+  FAILED_NETWORK
+  REFUNDED
+}
+
+enum PaymentEventType {
+  INITIATED
+  PROVIDER_CALLED
+  PROVIDER_RESPONSE
+  PROVIDER_TIMEOUT
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+model PaymentRequest {
+  id              String        @id @default(uuid())
+  idempotencyKey  String        @unique
+  orderId         String
+  tenantId        String
+  amount          Int           // In smallest currency unit (e.g., cents)
+  currency        String        @default("NGN")
+  status          PaymentStatus @default(INITIATED)
+  providerId      String?       // Paystack transaction reference
+  errorMessage    String?
+  retryCount      Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  confirmedAt     DateTime?
+  refundedAt      DateTime?
+
+  events PaymentEvent[]
+
+  @@index([idempotencyKey])
+  @@index([orderId])
+  @@index([tenantId, status])
+  @@index([createdAt])
+  @@map("task3_payment_requests")
+}
+
+model PaymentEvent {
+  id          String          @id @default(uuid())
+  paymentId   String
+  eventType   PaymentEventType
+  status      PaymentStatus
+  metadata    Json?           // Store provider response, error details, etc.
+  createdAt   DateTime        @default(now())
+
+  payment PaymentRequest @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+  @@index([eventType])
+  @@map("task3_payment_events")
+}
+
+model ReconciliationLog {
+  id          String   @id @default(uuid())
+  runAt       DateTime @default(now())
+  discrepancies Json   // Store found discrepancies
+  resolvedCount Int     @default(0)
+  status      String   // 'COMPLETED', 'FAILED'
+  errorMessage String?
+
+  @@index([runAt])
+  @@map("task3_reconciliation_logs")
+}
