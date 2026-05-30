@@ -1,0 +1,14 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Task 1: Sync Engine tables
+// Task 2: Inventory tables  
+// Task 3: Payment tables
+// To be added in next commit
+

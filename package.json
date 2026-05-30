@@ -1,0 +1,12 @@
+{
+  "name": "bake-platform-assessment",
+  "version": "1.0.0",
+  "description": "Offline-first sync, multi-tenant inventory, payment reliability",
+  "scripts": {
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "test": "jest"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
