@@ -1,5 +1,87 @@
 # Bake Platform Assessment
 
+A production-grade platform assessment implementing:
+
+- **Task 1:** Offline-first sync engine for POS devices
+- **Task 2:** Multi-tenant inventory API for restaurant chains
+- **Task 3:** Payment reliability layer with idempotency and reconciliation
+
+Built with **NestJS, PostgreSQL, Prisma, TypeScript, and Swagger/OpenAPI**.
+
+## 📋 Table of Contents
+
+- [Technology Stack](#technology-stack)
+- [Quick Start](#quick-start)
+- [Task 1: Offline-First Sync Engine](#task-1-offline-first-sync-engine)
+- [Task 2: Multi-Tenant Inventory API](#task-2-multi-tenant-inventory-api)
+- [Task 3: Payment Reliability Layer](#task-3-payment-reliability-layer)
+- [Assumptions & Tradeoffs](#assumptions--tradeoffs)
+- [Future Improvements](#future-improvements)
+- [Troubleshooting](#troubleshooting)
+
+## 🛠 Technology Stack
+
+| Category | Technology |
+|----------|------------|
+| **Runtime** | Node.js 20+ |
+| **Framework** | NestJS 10.x |
+| **Language** | TypeScript 5.x |
+| **Database** | PostgreSQL 16+ |
+| **ORM** | Prisma 5.x |
+| **Validation** | class-validator + class-transformer |
+| **Documentation** | Swagger/OpenAPI 7.x |
+| **Testing** | Jest 29.x |
+| **Logging** | Structured JSON logging |
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+```bash
+# Required versions
+Node.js >= 20.0.0
+PostgreSQL >= 16.0 (or Docker)
+npm >= 9.0.0
+
+Installation:
+
+# Clone the repository
+git clone https://github.com/WapSecure/bake-platform-assessment.git
+cd bake-platform-assessment
+
+# Install dependencies
+npm install
+
+# Create environment file
+cp .env.example .env
+
+# Start PostgreSQL (Docker)
+docker-compose up -d
+
+# Run database migrations
+npm run prisma:migrate
+
+# Generate Prisma client
+npm run prisma:generate
+
+# Seed test data for Task 2
+npm run prisma:seed
+
+# Start the development server
+npm run start:dev
+
+
+Verify Installation:
+
+# Health check
+curl http://localhost:3000/health
+
+# Open Swagger documentation
+open http://localhost:3000/api
+
+# Run all tests
+npm test
+
 Task 1: Offline-First Sync Engine
 
 Overview
@@ -843,3 +925,474 @@ GET /inventory/aggregate returns empty	Ensure x-parent-tenant-id header is set
 Stock calculation incorrect	Check movement types and quantities in database
 Tenant isolation failing	Verify tenantId is set on all queries
 
+
+Task 3: Payment Reliability Layer
+
+Overview:
+A production-grade payment processing wrapper that ensures never double-charge, handles payment provider failures gracefully, and maintains a complete audit trail for reconciliation. Built with NestJS, PostgreSQL, Prisma, and TypeScript.
+
+Key Features:
+
+✅ Idempotent payment initiation - Same order cannot be charged twice
+
+✅ Three failure mode handling - Timeout, provider error, network failure
+
+✅ Complete event sourcing - Every state change is logged
+
+✅ Reconciliation engine - Detects discrepancies between provider and internal records
+
+✅ Mock payment provider - No live API keys required for testing
+
+Architecture Decision: State Machine Pattern
+
+Payment State Flow:
+
+┌─────────────┐
+│  INITIATED  │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  PROCESSING │
+└──────┬──────┘
+       │
+       ├──────────────────────────┐
+       │                          │
+       ▼                          ▼
+┌─────────────┐    ┌─────────────────────────────┐
+│  CONFIRMED  │    │ FAILED_TIMEOUT              │
+└─────────────┘    │ FAILED_PROVIDER_ERROR       │
+                   │ FAILED_NETWORK              │
+                   └─────────────────────────────┘
+       │                          │
+       ▼                          │
+┌─────────────┐                   │
+│  REFUNDED   │◄──────────────────┘
+└─────────────┘
+
+Why State Machine Pattern?
+
+Pattern	                           Pros	                                 Cons	                                       Our Choice
+
+Direct API call	                   Simple	                             No audit trail, no recovery	                  ❌
+
+Retry with backoff	               Resilient	                         Can double-charge	                              ❌
+
+Saga Pattern	                   Distributed transaction support	     Complex for simple payments	                  ❌
+
+State Machine + Event Sourcing	   Audit trail, idempotent, recoverable	 Slightly more complex	                          ✅
+
+Idempotency Design
+Problem: Network failures cause retries → duplicate charges
+
+Solution:
+
+1. Idempotency key = {tenantId}_{orderId}
+
+2. Server stores payment record before calling provider
+
+3. Duplicate requests return existing payment status
+
+Example:
+
+// First request - CONFIRMED
+{ orderId: "order_001", tenantId: "tenant_001", amount: 5000 }
+
+// Second request (retry) - Returns existing status (no new charge)
+{ orderId: "order_001", tenantId: "tenant_001", amount: 5000 }
+// Response: { status: "CONFIRMED", message: "Payment already CONFIRMED" }
+
+Failure Mode Handling:
+Failure Mode	                                         Detection	                                    Action	                         Outcome
+
+Provider Timeout	                                     Request exceeds 5 seconds	                    Mark as FAILED_TIMEOUT	         Client retries with same idempotency key
+
+Provider Error	                                         API returns 4xx/5xx	                        Mark as FAILED_PROVIDER_ERROR	 Manual investigation required
+
+Network Failure	                                         Request fails before reaching provider	        Mark as FAILED_NETWORK	         Client retries with backoff
+
+API Contract
+Base URL: http://localhost:3000/payment
+
+Required Headers
+None required for Task 3 (tenant ID is in request body for this task)
+
+Endpoint Reference
+
+1. Initiate Payment
+POST /payment/initiate
+
+Request Body:
+
+{
+  "orderId": "order_001",
+  "tenantId": "tenant_001",
+  "amount": 5000,
+  "currency": "NGN"
+}
+
+Field	                         Type	                   Required	              Description
+orderId                          string	                   Yes	                  Unique order identifier
+tenantId	                     string	                   Yes	                  Tenant making the payment
+amount	                         integer	               Yes	                  Amount in cents (5000 = ₦50.00)
+currency	                     string	                   No	                  Default: "NGN"
+
+
+Response (200 OK - Success):
+
+{
+  "paymentId": "uuid",
+  "orderId": "order_001",
+  "status": "CONFIRMED",
+  "amount": 5000,
+  "providerReference": "txn_1234567890_abc123",
+  "message": "Payment successful"
+}
+
+Response (200 OK - Duplicate):
+
+{
+  "paymentId": "uuid",
+  "orderId": "order_001",
+  "status": "CONFIRMED",
+  "amount": 5000,
+  "message": "Payment already CONFIRMED"
+}
+
+Response (200 OK - Failure):
+
+{
+  "paymentId": "uuid",
+  "orderId": "order_002",
+  "status": "FAILED_TIMEOUT",
+  "amount": 5000,
+  "message": "Request timeout after 3 seconds"
+}
+
+2. Get Payment Status
+GET /payment/status/{paymentId}
+
+Response (200 OK):
+
+{
+  "id": "uuid",
+  "orderId": "order_001",
+  "status": "CONFIRMED",
+  "amount": 5000,
+  "events": [
+    {
+      "eventType": "INITIATED",
+      "status": "INITIATED",
+      "createdAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "eventType": "PROVIDER_CALLED",
+      "status": "PROCESSING",
+      "createdAt": "2026-01-01T00:00:00.100Z"
+    },
+    {
+      "eventType": "PROVIDER_RESPONSE",
+      "status": "CONFIRMED",
+      "createdAt": "2026-01-01T00:00:00.500Z"
+    }
+  ]
+}
+
+3. Get All Payments
+GET /payment/all
+
+Query Parameters:
+
+Parameter	                      Required	                Description
+
+tenantId	                      No	                    Filter by tenant
+
+limit	                          No	                    Max results (default: 50)
+
+Response (200 OK): Array of payment records
+
+4. Set Failure Mode (Test Only)
+POST /payment/test/set-failure-mode?mode={mode}
+
+Modes:
+
+1. none - Normal operation (default)
+
+2. timeout - Simulate provider timeout
+
+3. error - Simulate provider error
+
+4. network - Simulate network failure
+
+Response (200 OK):
+
+{
+  "message": "Failure mode set to: timeout",
+  "mode": "timeout"
+}
+
+5. Get Current Failure Mode (Test Only)
+GET /payment/test/failure-mode
+
+Response (200 OK):
+
+{
+  "mode": "none"
+}
+
+6. Run Reconciliation
+POST /payment/reconcile
+
+Request Body:
+
+[
+  {
+    "id": "txn_provider_001",
+    "orderId": "order_001",
+    "amount": 5000,
+    "status": "SUCCESS",
+    "createdAt": "2026-01-01T00:00:00.000Z"
+  }
+]
+
+Response (200 OK):
+
+{
+  "runAt": "2026-01-01T00:00:00.000Z",
+  "totalProviderTransactions": 2,
+  "totalInternalPayments": 1,
+  "discrepancies": [
+    {
+      "type": "PROVIDER_ONLY",
+      "orderId": "order_missing_001",
+      "amount": 10000,
+      "providerStatus": "SUCCESS",
+      "message": "Payment exists in provider but not in our system"
+    }
+  ],
+  "summary": {
+    "providerOnly": 1,
+    "internalOnly": 0,
+    "statusMismatch": 0
+  }
+}
+
+Discrepancy Types:
+
+Type	                                          Description
+PROVIDER_ONLY	                                  Payment exists in provider but not in our system
+INTERNAL_ONLY	                                  Payment exists in our system but not in provider
+STATUS_MISMATCH	                                  Payment status differs between systems
+
+7. Get Reconciliation History
+GET /payment/reconcile/history?limit=10
+
+Response (200 OK): Array of reconciliation logs
+
+8. Get Discrepancies by Type
+GET /payment/reconcile/discrepancies/{type}
+
+Response (200 OK): Array of discrepancies of the specified type
+
+Database Schema
+Tables
+
+Table	                                                   Purpose
+
+task3_payment_requests	                                   Payment records with idempotency keys
+task3_payment_events	                                   Immutable audit trail of all state changes
+task3_reconciliation_logs	                               History of reconciliation runs
+
+Payment States:
+
+State	                                                   Description
+
+INITIATED	                                               Payment record created, before provider call
+PROCESSING	                                               Provider call in progress
+CONFIRMED	                                               Payment successful
+FAILED_TIMEOUT	                                           Provider did not respond within timeout
+FAILED_PROVIDER_ERROR	                                   Provider returned an error
+FAILED_NETWORK	                                           Network error before reaching provider
+REFUNDED	                                               Payment was refunded
+
+Event Types:
+
+Event Type	                                               Description
+
+INITIATED	                                               Payment request received
+PROVIDER_CALLED	                                           Provider API called
+PROVIDER_RESPONSE	                                       Provider response received
+PROVIDER_TIMEOUT	                                       Provider timeout occurred
+CONFIRMED	                                               Payment confirmed
+FAILED	                                                   Payment failed
+REFUNDED	                                               Payment refunded
+
+Key Indexes:
+
+-- Idempotency lookup (most critical)
+CREATE INDEX idx_payment_idempotency ON task3_payment_requests(idempotency_key);
+
+-- Order lookup
+CREATE INDEX idx_payment_order ON task3_payment_requests(order_id);
+
+-- Tenant status queries
+CREATE INDEX idx_payment_tenant_status ON task3_payment_requests(tenant_id, status);
+
+-- Reconciliation date range
+CREATE INDEX idx_payment_created ON task3_payment_requests(created_at);
+
+-- Event audit trail
+CREATE INDEX idx_events_payment_time ON task3_payment_events(payment_id, created_at);
+
+Testing Summary
+
+Test Cases: 
+
+Test Case	                            Description	                                    Result
+
+Successful Payment	                    Normal flow with no failures	                ✅
+Idempotency	                            Same order sent twice	                        ✅ No duplicate
+Timeout Failure	                        Provider times out	                            ✅ FAILED_TIMEOUT
+Provider Error	                        Provider returns error	                        ✅ FAILED_PROVIDER_ERROR
+Network Failure                     	Network error	                                ✅ FAILED_NETWORK
+Payment Status	                        Retrieve with event history	                    ✅
+Reconciliation - Provider Only	        Payment in provider only	                    ✅ Detected
+Reconciliation - Internal Only	        Payment in internal only	                    ✅ Detected
+Reconciliation - Status Mismatch	    Different statuses	                            ✅ Detected
+Audit Trail	                            Complete event log	                            ✅ All events stored
+
+Running Task 3
+Prerequisites
+Tasks 1 & 2 setup complete
+
+PostgreSQL running
+
+Migrations applied
+
+Setup
+# Run migrations (adds Task 3 tables)
+npm run prisma:migrate
+
+# Generate Prisma client
+npm run prisma:generate
+
+# Start the server
+npm run start:dev
+
+# Health check
+curl http://localhost:3000/health
+
+# Test successful payment
+curl -X POST http://localhost:3000/payment/initiate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderId": "test_001",
+    "tenantId": "tenant_001",
+    "amount": 5000,
+    "currency": "NGN"
+  }'
+
+# Swagger documentation
+open http://localhost:3000/api
+
+Run Tests:
+
+# Run Task 3 specific tests
+npm test -- payment.service.spec.ts
+npm test -- reconciliation.service.spec.ts
+npm test -- mock-provider.service.spec.ts
+
+# Run all tests
+npm test
+
+Tradeoffs & Decisions
+
+Chosen: State Machine Pattern:
+
+Aspect	                                                        Decision
+
+Pro	                                                            Complete audit trail, idempotent, recoverable
+Con	                                                            More complex than simple API call
+Rationale	                                                    Financial systems require auditability
+
+Chosen: Idempotency Key = {tenantId}_{orderId}
+
+Aspect	                                                        Decision
+
+Pro	                                                            Simple, ensures tenant isolation
+Con	                                                            Same orderId cannot be reused across tenants
+Rationale	                                                    Prevents cross-tenant replay attacks
+
+Chosen: 5 Second Timeout
+
+Aspect	                                                        Decision
+Pro	                                                            Balances user experience and provider expectations
+Con	                                                            May timeout on slow networks
+Rationale	                                                    Standard industry practice for payment APIs
+
+Chosen: No Automatic Retry
+
+Aspect	                                                        Decision
+Pro	                                                            Prevents double-charge risk
+Con	                                                            Client must handle retry logic
+Rationale	                                                    Payment idempotency allows safe client retries
+
+Future Improvements (Given More Time)
+1. Automatic retry with exponential backoff - For network failures only
+
+2. Webhook notifications - Async payment confirmations
+
+3. Dead letter queue - Failed payments for manual review
+
+4. Real-time provider status dashboard - Monitor provider health
+
+5. Scheduled reconciliation - Automatic daily reconciliation
+
+6. Refund workflow - Full refund lifecycle management
+
+7. Partial refunds - Support for partial payment reversals
+
+8. Multi-provider support - Paystack, Flutterwave, Stripe
+
+Troubleshooting
+
+Issue	                                                        Solution
+Error: Payment not found	                                    Verify paymentId exists
+Reconciliation shows no discrepancies	                        Data is consistent - good!
+Timeout not triggering	                                        Check failure mode is set to timeout
+Duplicate request creates new payment	                        Verify idempotency key format {tenantId}_{orderId}
+Events not being logged	                                        Check database connection and PaymentEvent table
+
+File Structure
+
+src/modules/payment/
+├── controllers/
+│   └── payment.controller.ts      # All payment endpoints
+├── services/
+│   ├── payment.service.ts         # Core payment logic
+│   ├── reconciliation.service.ts  # Reconciliation engine
+│   └── mock-provider.service.ts   # Mock payment provider
+├── dto/
+│   ├── initiate-payment.dto.ts    # Request validation
+│   ├── payment-response.dto.ts    # Response structure
+│   └── provider-transaction.dto.ts # Provider transaction format
+└── tests/
+    ├── payment.service.spec.ts    # Payment unit tests
+    ├── reconciliation.service.spec.ts # Reconciliation tests
+    └── mock-provider.service.spec.ts # Mock provider tests
+
+✅ Assessment Completion Status
+
+Task	                     Status	                    Key Deliverables
+
+Task 1	                     ✅ Complete	               Offline sync engine, conflict resolution, idempotency, tests
+
+Task 2	                     ✅ Complete	               Multi-tenant API, tenant isolation, aggregation, low-stock plan
+
+Task 3	                     ✅ Complete	               Payment idempotency, failure handling, reconciliation, tests
+
+
+📧 Contact
+For any questions regarding this submission, please email me at writewapsecuregmail.com.
+
+© 2026 Bake Platform Assessment | Senior Fullstack Engineering Challenge
